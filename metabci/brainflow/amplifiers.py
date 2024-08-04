@@ -13,8 +13,17 @@ from collections import deque
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
-import pylsl
-import queue
+
+import serial
+import ctypes
+import re
+my_dll = ctypes.CDLL("path_to_LinkMe.dll")
+my_dll.dataProtocol.argtypes = (ctypes.POINTER(ctypes.c_ubyte),ctypes.c_int)
+my_dll.dataProtocol.restype = ctypes.c_int
+my_dll.getElectricityValue.restype = ctypes.c_int
+my_dll.getFallFlag.argtypes = (ctypes.POINTER(ctypes.c_int), )
+my_dll.getData.restype =ctypes.POINTER(ctypes.POINTER(ctypes.c_double))
+my_dll.getDataCurrIndex.argtypes = (ctypes.POINTER(ctypes.c_long), )
 
 from .logger import get_logger
 from .workers import ProcessWorker
@@ -169,559 +178,62 @@ class BaseAmplifier:
     -Created on: 2021-04-01
     -update log:
         2022-08-10 by Wei Zhao
+    -modified log:
+        2024-08-04
     """
 
     def __init__(self):
         self._markers = {}
-        self._workers = {}
         self._exit = threading.Event()
+        self.detected_data = Queue()
 
+    @abstractmethod
+    def connect(self):
+        pass
+    
+    @abstractmethod
+    def start_acquisition(self):
+        pass
+
+    @abstractmethod
+    def close_connection(self):
+        pass
+    
     @abstractmethod
     def recv(self):
         """the minimal recv data function, usually a package."""
         pass
 
-    def start(self):
-        """start the loop."""
-        for work_name in self._workers:
-            logger_amp.info("clear marker buffer")
-            self._markers[work_name].clear()
-        logger_amp.info("start the loop")
-        self._t_loop = threading.Thread(target=self._inner_loop,
-                                        name="main_loop")
-        self._t_loop.start()
-
-    def _inner_loop(self):
+    def _inner_loop(self,name):
         """Inner loop in the threading."""
+        self.markers[name].clear()
         self._exit.clear()
         logger_amp.info("enter the inner loop")
         while not self._exit.is_set():
             try:
                 samples = self.recv()
                 if samples:
-                    self._detect_event(samples)
-            except Exception:
-                pass
+                    self._detect_event(samples,name)
+            except Exception as e:
+                print(e)
         logger_amp.info("exit the inner loop")
 
-    def stop(self):
-        """stop the loop."""
-        logger_amp.info("stop the loop")
-        self._exit.set()
-        logger_amp.info("waiting the child thread exit")
-        self._t_loop.join()
-        self.clear()
-
-    def _detect_event(self, samples):
+    def _detect_event(self, samples, name):
         """detect event label"""
-        for work_name in self._workers:
-            logger_amp.info("process worker-{}".format(work_name))
-            marker = self._markers[work_name]
-            worker = self._workers[work_name]
-            for sample in samples:
-                marker.append(sample)
-                if marker(sample[-1]) and worker.is_alive():
-                    worker.put(marker.get_epoch())
-
-    def up_worker(self, name):
-        logger_amp.info("up worker-{}".format(name))
-        self._workers[name].start()
-
-    def down_worker(self, name):
-        logger_amp.info("down worker-{}".format(name))
-        self._workers[name].stop()
-        self._workers[name].clear_queue()
-
-    def register_worker(self, name: str,
-                        worker: ProcessWorker,
-                        marker: Marker):
-        logger_amp.info("register worker-{}".format(name))
-        self._workers[name] = worker
-        self._markers[name] = marker
-
-    def unregister_worker(self, name: str):
-        logger_amp.info("unregister worker-{}".format(name))
-        del self._markers[name]
-        del self._workers[name]
-
-    def clear(self):
-        logger_amp.info("clear all workers")
-        worker_names = list(self._workers.keys())
-        for name in worker_names:
-            self._markers[name].clear()
-            self.down_worker(name)
-            self.unregister_worker(name)
-
-
-class NeuroScan(BaseAmplifier):
-    """An amplifier implementation for NeuroScan device.
-    Intercept online data.
-    -author: Lichao Xu
-    -Created on: 2021-04-01
-    -update log:
-        2022-08-10 by Wei Zhao
-    """
-
-    _COMMANDS = {
-        "stop_connect": b"CTRL\x00\x01\x00\x02\x00\x00\x00\x00",
-        "start_acq": b"CTRL\x00\x02\x00\x01\x00\x00\x00\x00",
-        "stop_acq": b"CTRL\x00\x02\x00\x02\x00\x00\x00\x00",
-        "start_trans": b"CTRL\x00\x03\x00\x03\x00\x00\x00\x00",
-        "stop_trans": b"CTRL\x00\x03\x00\x04\x00\x00\x00\x00",
-        "show_ver": b"CTRL\x00\x01\x00\x01\x00\x00\x00\x00",
-        "show_edf": b"CTRL\x00\x03\x00\x01\x00\x00\x00\x00",
-        "start_imp": b"CTRL\x00\x02\x00\x03\x00\x00\x00\x00",
-        "req_version": b"CTRL\x00\x01\x00\x01\x00\x00\x00\x00",
-        "correct_dc": b"CTRL\x00\x02\x00\x05\x00\x00\x00\x00",
-        "change_setup": b"CTRL\x00\x02\x00\x04\x00\x00\x00\x00",
-    }
-
-    def __init__(
-        self,
-        device_address: Tuple[str, int] = ("127.0.0.1", 4000),
-        srate: float = 1000,
-        num_chans: int = 68,
-    ):
-        super().__init__()
-        self.device_address = device_address
-        self.srate = srate
-        self.num_chans = num_chans
-        self.neuro_link = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # the size of a package in neuroscan data is
-        # srate/25*(num_chans+1)*4 bytes
-        self.pkg_size = srate / 25 * (num_chans + 1) * 4
-        self.timeout = 2 * 25 / self.srate
-
-    def _unpack_header(self, b_header):
-        ch_id = struct.unpack(">4s", b_header[:4])
-        w_code = struct.unpack(">H", b_header[4:6])
-        w_request = struct.unpack(">H", b_header[6:8])
-        pkg_size = struct.unpack(">I", b_header[8:])
-        return (ch_id[0].decode("utf-8"), w_code[0], w_request[0], pkg_size[0])
-
-    def _unpack_data(self, num_chans, b_data):
-        fmt = ">" + str((num_chans + 1) * 4) + "B"
-        samples = (
-            np.array(list(struct.iter_unpack(fmt, b_data)), dtype=np.uint8)
-            .view(np.int32)
-            .astype(np.float64)
-        )
-        samples[:, -1] = samples[:, -1] - 65280
-        samples[:, :-1] = samples[:, :-1] * 0.0298 * 1e-6
-        return samples.tolist()
-
-    def _recv(self, num_bytes):
-        fragments = []
-        b_count = 0
-        while b_count < num_bytes:
-            try:
-                chunk = self.neuro_link.recv(num_bytes - b_count)
-            except socket.timeout as e:
-                raise e
-            b_count += len(chunk)
-            fragments.append(chunk)
-
-        b_data = b"".join(fragments)
-        return b_data
-
-    def recv(self):
-        b_header = self._recv(12)
-        header = self._unpack_header(b_header)
-        samples = None
-        if header[-1] != 0:
-            b_data = self._recv(header[-1])
-            samples = self._unpack_data(self.num_chans, b_data)
-        return samples
-
-    def send(self, message):
-        self.neuro_link.sendall(message)
-
-    def set_timeout(self, timeout):
-        if self.neuro_link:
-            self.neuro_link.settimeout(timeout)
-
-    def command(self, method):
-        if method == "connect":
-            self.neuro_link.connect(self.device_address)
-        elif method == "start_acquire":
-            self.send(self._COMMANDS["start_acq"])
-            self.set_timeout(None)
-            self.recv()
-            self.recv()
-            self.set_timeout(self.timeout)
-        elif method == "stop_acquire":
-            self.set_timeout(None)
-            self.send(self._COMMANDS["stop_acq"])
-            self.recv()
-            self.recv()
-            self.set_timeout(self.timeout)
-        elif method == "start_transport":
-            self.send(self._COMMANDS["start_trans"])
-            time.sleep(1e-2)
-            self.start()
-        elif method == "stop_transport":
-            self.send(self._COMMANDS["stop_trans"])
-            self.stop()
-        elif method == "disconnect":
-            self.send(self._COMMANDS["stop_connect"])
-            if self.neuro_link:
-                self.neuro_link.close()
-                self.neuro_link = None
-
-    def connect_tcp(self):
-        self.neuro_link.connect(self.device_address)
-
-    def start_acq(self):
-        self.send(self._COMMANDS["start_acq"])
-        self.set_timeout(None)
-        self.recv()
-        self.recv()
-        self.set_timeout(self.timeout)
-
-    def stop_acq(self):
-        self.set_timeout(None)
-        self.send(self._COMMANDS["stop_acq"])
-        self.recv()
-        self.recv()
-        self.set_timeout(self.timeout)
-
-    def start_trans(self):
-        self.send(self._COMMANDS["start_trans"])
-        time.sleep(1e-2)
-        self.start()
-
-    def stop_trans(self):
-        self.send(self._COMMANDS["stop_trans"])
-        self.stop()
-
-    def close_connection(self):
-        self.send(self._COMMANDS["stop_connect"])
-        if self.neuro_link:
-            self.neuro_link.close()
-            self.neuro_link = None
-
-
-class Curry8(BaseAmplifier):
-    """An amplifier implementation for Curry8.
-    Intercept online data.
-    -author: Ziyu Zhou
-    -Created on: 2023-07-07
-    """
-
-    def __init__(
-            self,
-            device_address: Tuple[str, int] = ("127.0.0.1", 4000),
-            srate: float = 1000,
-            num_chans: int = 68,
-    ):
-        super().__init__()
-        self.device_address = device_address
-        self.srate = srate
-        self.num_chans = num_chans
-        self.neuro_link = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # the size of a package in neuroscan data is
-        # srate/25*(num_chans+1)*4 bytes
-        self.pkg_size = srate / 25 * (num_chans + 1) * 4
-        self.timeout = 2 * 25 / self.srate
-
-    def _unpack_header(self, b_header):
-        ch_id = b_header[:4].decode()
-        w_code = struct.unpack(">H", b_header[4:6])
-        w_request = struct.unpack(">H", b_header[6:8])
-        startSample = struct.unpack(">I", b_header[8:12])
-        pkg_size = struct.unpack(">I", b_header[12:16])
-        return (ch_id, w_code[0], w_request[0], startSample[0], pkg_size[0])
-
-    def _unpack_data(self, num_chans, b_data):
-        samples = np.frombuffer(b_data, dtype=np.float32).reshape(-1, num_chans).astype(np.float64)
-        samples[:, -1] = samples[:, -1] - 65280
-        return samples
-
-    def _recv(self, num_bytes):
-        fragments = b""
-        b_count = 0
-        while b_count < num_bytes:
-            try:
-                chunk = self.neuro_link.recv(num_bytes - b_count)
-            except socket.timeout as e:
-                raise e
-            b_count += len(chunk)
-            fragments += chunk
-
-        b_data = fragments
-        return b_data
-
-    def recv(self):
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-        if header[-1] != 0:
-            b_data = self._recv(header[-1])
-            if header[0] == "DATA":
-                if header[1] == self.dataType("Data_Eeg") and header[2] == self.blockType("DataTypeFloat32bit"):
-                    samples = self._unpack_data(self.num_chans, b_data)
-                    return samples.tolist()
-        return []
-
-    def send(self, message):
-        self.neuro_link.sendall(message)
-
-    def set_timeout(self, timeout):
-        if self.neuro_link:
-            self.neuro_link.settimeout(timeout)
-
-    def connect_tcp(self):
-        self.neuro_link.connect(self.device_address)
-
-    def start_acq(self):
-        self.send(self.command_code("RequestAmpConnect"))
-        self.set_timeout(None)
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-        print("start_acq", header)
-
-        self.set_timeout(self.timeout)
-
-    def stop_acq(self):
-        self.set_timeout(None)
-        self.send(self.command_code("RequestAmpDisonnect"))
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-        print("stop_acq", header)
-
-        self.set_timeout(self.timeout)
-
-    def start_trans(self):  # send data
-        self.send(self.command_code("RequestStreamingStart"))
-        time.sleep(1e-2)
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-        print("start_trans", header)
-
-        self.start()
-
-    def stop_trans(self):
-        self.send(self.command_code("RequestStreamingStop"))
-        self.stop()
-
-    def close_connection(self):
-        if self.neuro_link:
-            self.neuro_link.close()
-            self.neuro_link = None
-
-    def update_basic_info(self):
-        status, basicInfo, header = self.getBasicInfo()
-        if status:
-            self.srate = basicInfo["srate"]
-            self.num_chans = basicInfo["num_chans"]
-            self.basicInfo = basicInfo
-            return True
-        else:
-            return False
-
-    def update_channel_info(self):
-        status, channelInfo, header = self.getChannelInfoList()
-        if status:
-            self.chanelNameList = [x["chanLabel"] for x in channelInfo]
-            self.channelInfo = channelInfo
-            return True
-        else:
-            return False
-
-    def getBasicInfo(self):
-        maxChans = 300
-
-        # sendCommand
-        self.send(self.command_code('RequestBasicInfoAcq'))
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-
-        if header[0] != 'DATA' \
-                or header[1] != self.dataType("Data_Info") \
-                or header[2] != self.infoType("InfoType_BasicInfo"):
-            return 0, None, header
-
-        # read basicInfo
-        b_data = self._recv(header[-1])
-        basicInfo = {
-            'size': struct.unpack('<I', b_data[0:4])[0],
-            'num_chans': struct.unpack('<I', b_data[4:8])[0],
-            'srate': struct.unpack('<I', b_data[8:12])[0],
-            'dataSize': struct.unpack('<I', b_data[12:16])[0],
-            'allowClientToControlAmp': struct.unpack('<I', b_data[16:20])[0],
-            'allowClientToControlRec': struct.unpack('<I', b_data[20:24])[0]
-        }
-
-        if basicInfo['num_chans'] > 0 and basicInfo['num_chans'] < maxChans and basicInfo['srate'] > 0 and (
-                basicInfo['dataSize'] == 2 or basicInfo['dataSize'] == 4):
-            status = 1
-        else:
-            status = 0
-
-        return status, basicInfo, header
-
-    def getChannelInfoList(self):
-        numChannels = self.num_chans
-
-        self.send(self.command_code("RequestChannelInfo"))
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-
-        if header[0] != 'DATA' \
-                or header[1] != self.dataType("Data_Info") \
-                or header[2] != self.infoType("InfoType_ChannelInfo"):
-            status = 0
-            infoList = None
-            return status, infoList, header
-        infoListRaw = self._recv(header[-1])
-
-        offset_channelId = 0
-        offset_chanLabel = offset_channelId + 4
-        offset_chanType = offset_chanLabel + 80
-        offset_deviceType = offset_chanType + 4
-        offset_eegGroup = offset_deviceType + 4
-        offset_posX = offset_eegGroup + 4
-        offset_posY = offset_posX + 8
-        offset_posZ = offset_posY + 8
-        offset_posStatus = offset_posZ + 8
-        offset_bipolarRef = offset_posStatus + 4
-        offset_addScale = offset_bipolarRef + 4
-        offset_isDropDown = offset_addScale + 4
-        offset_isNoFilter = offset_isDropDown + 4
-
-        chanInfoLen = offset_isNoFilter + 4
-        chanInfoLen = round(chanInfoLen / 8) * 8
-
-        infoList = []
-
-        for i in range(numChannels):
-            j = chanInfoLen * i
-            chanInfo = {
-                'id': struct.unpack('<I', infoListRaw[j + offset_channelId: j + offset_chanLabel])[0],
-                'chanLabel': infoListRaw[j + offset_chanLabel: j + offset_chanType].replace(b'\x00', b'').decode(
-                    'utf-8'),
-                'chanType': struct.unpack('<I', infoListRaw[j + offset_chanType: j + offset_deviceType])[0],
-                'deviceType': struct.unpack('<I', infoListRaw[j + offset_deviceType: j + offset_eegGroup])[0],
-                'eegGroup': struct.unpack('<I', infoListRaw[j + offset_eegGroup: j + offset_posX])[0],
-                'posX': struct.unpack('<d', infoListRaw[j + offset_posX: j + offset_posY])[0],
-                'posY': struct.unpack('<d', infoListRaw[j + offset_posY: j + offset_posZ])[0],
-                'posZ': struct.unpack('<d', infoListRaw[j + offset_posZ: j + offset_posStatus])[0],
-                'posStatus': struct.unpack('<I', infoListRaw[j + offset_posStatus: j + offset_bipolarRef])[0],
-                'bipolarRef': struct.unpack('<I', infoListRaw[j + offset_bipolarRef: j + offset_addScale])[0],
-                'addScale': struct.unpack('<f', infoListRaw[j + offset_addScale: j + offset_isDropDown])[0],
-                'isDropDown': struct.unpack('<I', infoListRaw[j + offset_isDropDown: j + offset_isNoFilter])[0],
-                'isNoFilter': struct.unpack('<II', infoListRaw[j + offset_isNoFilter: j + chanInfoLen])
-            }
-            infoList.append(chanInfo)
-        status = 1
-
-        return status, infoList, header
-
-    def get_server_version(self):
-        self.send(self.command_code('RequestVersion'))
-
-        b_header = self._recv(20)
-        header = self._unpack_header(b_header)
-        print("get_server_version", header)
-
-        b_data = self._recv(header[-1])
-        version = struct.unpack("<I", b_data)[0]
-        return version
-
-    def controlCode(self, type):
-        if type == 'CTRL_FromServer':
-            return 1
-        elif type == 'CTRL_FromClient':
-            return 2
-        else:
-            return -1
-
-    def receiveType(self, code):
-        if code == 1:
-            return "StartAmplifier"
-        elif code == 2:
-            return "StopAmplifier"
-
-    def requestType(self, type):
-        if type == 'RequestVersion':
-            return 1
-        elif type == 'RequestChannelInfo':
-            return 3
-        elif type == 'RequestBasicInfoAcq':
-            return 6
-        elif type == 'RequestStreamingStart':
-            return 8
-        elif type == 'RequestStreamingStop':
-            return 9
-        elif type == 'RequestAmpConnect':
-            return 10
-        elif type == 'RequestAmpDisconnect':
-            return 11
-        elif type == 'RequestDelay':
-            return 16
-        else:
-            return -1
-
-    def dataType(self, type):
-        if type == 'Data_Info':
-            return 1
-        elif type == 'Data_Eeg':
-            return 2
-        elif type == 'Data_Events':
-            return 3
-        elif type == 'Data_Impedance':
-            return 4
-        else:
-            return -1
-
-    def infoType(self, type):
-        if type == 'InfoType_Version':
-            return 1
-        elif type == 'InfoType_BasicInfo':
-            return 2
-        elif type == 'InfoType_ChannelInfo':
-            return 4
-        elif type == 'InfoType_StatusAmp':
-            return 7
-        elif type == 'InfoType_Time':
-            return 9
-        else:
-            return -1
-
-    def blockType(self, t):
-        d = -1
-        if t == 'DataTypeFloat32bit':
-            d = 1
-        elif t == 'DataTypeFloat32bitZIP':
-            d = 2
-        elif t == 'DataTypeEventList':
-            d = 3
-        return d
-
-    def command_code(self, method):
-        c_chID = b"CTRL"
-        w_Code = struct.pack('>H', self.controlCode('CTRL_FromClient'))
-        w_Request = struct.pack('>H', self.requestType(method))
-        un_Sample = struct.pack('>I', 0)
-        un_Size = struct.pack('>I', 0)
-        un_SizeUn = struct.pack('>I', 0)
-
-        header = c_chID + w_Code + w_Request + un_Sample + un_Size + un_SizeUn
-        return header
-
-    def __del__(self):
-        print("The session has been disconnected!")
-        self.close_connection()
-
+        marker = self._markers[name]
+        for sample in samples:
+            marker.append(sample)
+            if marker(sample[-1]):
+                self.detected_data.put(marker.get_epoch())  
+                print('detect ok {}'.format(str(self)))
 
 class Neuracle(BaseAmplifier):
     """ An amplifier implementation for neuracle devices.
     -author: Jie Mei
     -Created on: 2022-12-04
+    -modified log:
+        2024-08-04
+    -
 
     Brief introduction:
     This class is a class for get package data from Neuracle device. To use
@@ -780,634 +292,362 @@ class Neuracle(BaseAmplifier):
 
         return np.asarray(unpack_data), event
 
-    def connect_tcp(self):
+    def connect(self):
         self.tcp_link.connect(self.device_address)
 
-    def start_trans(self):
-        time.sleep(1e-2)
-        self.start()
+    def start_acquisition(self):
+    time.sleep(1e-2)
 
-    def stop_trans(self):
-        self.stop()
+    def stop_transmission(self):
+        self._exit.set()
 
     def close_connection(self):
         if self.tcp_link:
             self.tcp_link.close()
             self.tcp_link = None
 
-
-class LSLInlet:
-    """Base class for a intlet"""
-
-    def __init__(self, info: pylsl.StreamInfo) -> None:
-        self.inlet = pylsl.StreamInlet(
-            info, max_buflen=3,
-            processing_flags=pylsl.proc_clocksync | pylsl.proc_dejitter)
-
-        self.name = info.name()
-        self.channel_count = info.channel_count()
-
-    def stream_action(self):
-        pass
-
-
-class DataInlet(LSLInlet):
-    dtypes = [[], np.float32, np.float64, None,
-              np.int32, np.int16, np.int8, np.int64]
-
-    def __init__(self, info: pylsl.StreamInfo) -> None:
-        super().__init__(info)
-        # Define two queue for storage the data retrieved from device
-        # and their timestamp range.
-        self.data_queue: queue.Queue[Any] = queue.Queue(3)
-
-    def stream_action(self):
-        samples, ts = self.inlet.pull_chunk(
-            timeout=0.0, max_samples=40)
-        if ts:
-            samples = np.asarray(samples)
-            ts = np.asarray(ts)
-            pack_data = np.hstack((samples, ts.reshape((-1, 1))))
-            self.data_queue.put(pack_data)
-
-    def get_data(self):
-        if self.data_queue.full():
-            data = self.data_queue.get()
-            return data
-        else:
-            return np.asarray([0])
-
-
-class MarkerInlet(LSLInlet):
-    def __init__(self, info: pylsl.StreamInfo) -> None:
-        super().__init__(info)
-
-    def stream_action(self):
-        marker_value, marker_ts = self.inlet.pull_sample(0.0)
-        if marker_ts:
-            # cache = []
-            # for content, ts in zip(marker_value, marker_ts):
-            try:
-                int_label = int(marker_value[0])
-            except Exception:
-                raise ValueError(
-                    "The marker value: {} can not be \
-                        typed into int".format(marker_value))
-                # cache.append([int_label, ts])
-            return [int_label, marker_ts]
-        else:
-            return []
-
-
-class LSLapps():
-    """An amplifier implementation for Lab streaming layer (LSL) apps.
-    LSL ref as: https://github.com/sccn/labstreaminglayer
-    The LSL provides many builded apps for communiacting with varities
-    of devices, and some of the are EEG acquiring device, like EGI, g.tec,
-    DSI and so on. For metabci, here we just provide a pathway for reading
-    lsl data streams, which means as long as the the LSL providing the app,
-    the metabci could support its online application. Considering the
-    differences among different devices for transfering the event trigger.
-    YOU MUST BE VERY CAREFUL to determine wethher the data stream reading
-    from the LSL apps contains a event channel. For example, the neuroscan
-    synamp II will append a extra event channel to the raw data channel.
-    Because we do not have chance to test each device that LSL supported, so
-    please modify this class before using with your own condition.
+class Niantong(BaseAmplifier):
+    """An amplifier implementation for Niantong devices.
+    -author: Xixian Lin
+    -Created on: 2024-08-04
     """
-
-    def __init__(self, ):
+    _byts = 3
+    _start = 2
+    _checksum = -4
+    _trigger = -3
+    _battery = -2
+    _seq = -1
+    _threshold_ratio = 0.01
+    
+    cmd = {
+        500: b"\x55\x66\x52\x41\x54\x45\x01\x0a",
+        1000: b"\x55\x66\x52\x41\x54\x45\x02\x0a",
+        2000: b"\x55\x66\x52\x41\x54\x45\x03\x0a",
+        4000: b"\x55\x66\x52\x41\x54\x45\x04\x0a",
+        8000: b"\x55\x66\x52\x41\x54\x45\x05\x0a",
+        "W": b"\x55\x66\x4d\x4f\x44\x45\x57\x0a",
+        "Z": b"\x55\x66\x4d\x4f\x44\x45\x5a\x0a",
+        "R": b"\x55\x66\x4d\x4f\x44\x45\x52\x0a",
+        "B": b"\x55\x66\x42\x41\x54\x54\x42\x0a",
+        "close": b"\x55\x66\x44\x49\x53\x43\x01\x0a",
+    }
+    
+    def __init__(self,
+                 port_addr,baudrate=9600,fs=500,num_chans=8):   
+        self.port_addr = port_addr
+        self.baudrate = baudrate
+        self.command_wait = 0.05
+        self.fs = fs
+        self.num_chans = num_chans
+        length_ = self.num_chans * self._byts + abs(self._checksum)
+        self._threshold = int((self._start + length_) * self.fs * self._threshold_ratio)
+        
+        self.__buffer = bytearray()
+        self.__pattern = re.compile(b"\xbb\xaa.{%d}" % length_, flags=re.DOTALL)
+        self.__last_num = 255
+        self.ch_idx = list(range(num_chans))[:]
+        self._ratio = 0.02235174
+        self._drop_count = 0
+        
         super().__init__()
-        self.marker_inlet = None
-        self.data_inlet = None
-        self.device_data = None
-        self.marker_data = None
-        self.marker_cache = list()
-        self.marker_count = 0
-        self.streams_count = 0
-        self.pending_stream = []
-        self.data_response = np.zeros(1)
-        self.bg_stream_checker = pylsl.ContinuousResolver()
-        time.sleep(1.5)
-        self.stream_checker_threading = threading.Thread(
-            target=self.stream_checker, name="stream_checker")
-        self.stream_checker_threading.start()
-
-    def stream_checker(self):
-        while True:
-            streams = self.bg_stream_checker.results()
-            if len(streams) != self.streams_count:
-                self.streams_count = len(streams)
-                for info in streams:
-                    if info.type() == 'Markers':
-                        if info.nominal_srate() != pylsl.IRREGULAR_RATE \
-                                or info.channel_format() != pylsl.cf_string:
-                            print('Invalid marker stream ' + info.name())
-                        print('Adding marker inlet: ' + info.name())
-                        self.marker_inlet = MarkerInlet(info)
-                    elif info.nominal_srate() != pylsl.IRREGULAR_RATE \
-                            and info.channel_format() != pylsl.cf_string:
-                        print('Adding data inlet: ' + info.name())
-                        self.data_inlet = DataInlet(info)
-                    else:
-                        print('Don\'t know what to do \
-                                with stream ' + info.name())
-            time.sleep(0.5)
-
-    def recv(self):
-        if self.marker_inlet is not None:
-            self.marker_data = self.marker_inlet.stream_action()
-        # Check if there are markers retriving from the stream.
-        if self.marker_data:
-            self.marker_cache.append(self.marker_data)
-            # print("Catch a trigger, content is: {}".format(self.marker_data))
-        if self.data_inlet is not None:
-            self.data_inlet.stream_action()
-            self.data_response = self.data_inlet.get_data()
-        # Check if there are devices data from the stream. Because we kept
-        # a buffer, so the data will be delay about 80points. In case we
-        # miss the labels
-        if self.data_response.any():
-            device_data = self.data_response
-            epoch_length = device_data.shape[0]
-            # Create a zero vector as label line
-            label_line = np.zeros(epoch_length)
-            # Find the label position
-            for label in self.marker_cache:
-                position = device_data[:, -1].searchsorted(label[-1])
-                # The smaller index in the marker cache means a earlier label
-                if position >= epoch_length:
-                    # IF larger than the epoch max index, we say the timestamp
-                    # is out of the range of current device epoch.
-                    break
-                else:
-                    label_line[position] = int(label[0])
-                    # print("The trigger position has been \
-                    #       assigned to {}".format(position))
-                    # print("LSL clock delta: \
-                    #         {}".format(label[-1]-device_data[position, -1]))
-                    # POP out the current index
-                    self.marker_cache.remove(label)
-            # Replaced the last column of device_data as the trigger column
-            device_data[:, -1] = label_line
-            return device_data.tolist()
+        
+    def connect(self):
+        self.port = serial.Serial(timeout=5, port=self.port_addr)
+        if self.port.isOpen():
+            print("串口 %s 打开成功！" %self.port_addr)
+            print(self.port.name)
         else:
-            return []
+            print("串口 %s 打开失败！" %self.port_addr)
+        try: 
+            self.port.write(self.cmd[self.fs])
+            time.sleep(self.command_wait)
+            self.port.read_all()
+        except Exception as e:
+            print(e)
+    
+    def close_connection(self):
+        self.port.write(self.cmd["R"])
+        time.sleep(self.command_wait)
+        self.port.read_all()
+        self.port.close();
+        if self.port.isOpen():  
+            print("串口未关闭。")
+        else:
+            print("串口已关闭。")
+            
+    def start_acquisition(self):
+        ack = self.port.write(self.cmd["W"])
+        self.port.read(ack)
+            
+    def recv(self):
+        data = None
+        try:
+            data_ = self.port.read(self._threshold)
+        except Exception as e:
+           print("读取串口数据出错:", e)
+        try:
+            if data_:
+                data = self._unpack_data(data_)
+        except Exception as e:
+            print("解包出错:", e)
+        return data
+    
+    def stop_transmission(self):
+        self._exit.set()
+             
+    def _unpack_data(self,q):
+        self.__buffer.extend(q)
+        if len(self.__buffer) < self._threshold:
+            return
+        frames = []
+        for frame_obj in self.__pattern.finditer(self.__buffer):
+            frame = memoryview(frame_obj.group())
+            raw = frame[self._start : self._checksum]
+            if frame[self._checksum] != (~sum(raw)) & 0xFF:
+                self._drop_count += 1
+                err = f"|Checksum invalid, packet dropped{datetime.datetime.now()}\n|Current:{frame.hex()}"
+                print(err)
+                continue
+            cur_num = frame[self._seq]
+            if cur_num != ((self.__last_num + 1) % 256):
+                self._drop_count += 1
+                err = f">>>> Pkt Los Cur:{cur_num} Last valid:{self.__last_num} buf len:{len(self.__buffer)} dropped times:{self._drop_count} {datetime.datetime.now()}<<<<\n"
+                print(err)
+            self.__last_num = cur_num
+            data = [
+                int.from_bytes(
+                    raw[i * self._byts : (i + 1) * self._byts],
+                    signed=True,
+                    byteorder="big",
+                )
+                * self._ratio
+                for i in self.ch_idx
+            ]
+            data.append(frame[self._trigger])
+            frames.append(data)
+        if frames:
+            del self.__buffer[: frame_obj.end()]
+            self.batt_val = frame[self._battery]
+            return frames
 
-    def start_trans(self):
+class Nianji(BaseAmplifier):
+    """An amplifier implementation for Nianji devices.
+    -author: Xixian Lin
+    -Created on: 2024-08-04
+    """
+    def __init__(self,
+                 port_addr,baudrate=460800):
+        self.port_addr = port_addr
+        self.baudrate = baudrate
+       
+        self.data_buffer = Queue()
+        self.each_length = 10 * 136
+        
+        super().__init__()
+        
+    def connect(self):
+        self.port = serial.Serial(port=self.port_addr, baudrate=self.baudrate)
+        if self.port.isOpen():
+            print("串口 %s 打开成功！" %self.port_addr)
+            print(self.port.name)
+        else:
+            print("串口 %s 打开失败！" %self.port_addr)
+            
+    def recv(self):
+        try:
+            com_input = self.port.read(25 * 136)
+        except Exception as e:
+            print("读取串口数据出错:", e)
+        else:
+            self.data_buffer.put(com_input)
+            
+        if not self.data_buffer.empty():
+            data = self.data_buffer.get()#[:self.each_length]
+            
+        data_array = (ctypes.c_ubyte * len(data))(*data)
+        dataSize  = my_dll.dataProtocol(data_array, len(data))
+        
+        eegData = my_dll.getData()
+        data_value = [[eegData[i][j] for j in range(9)] for i in range(dataSize )]#生成二维列表
+        
+        return data_value
+         
+    def close_connection(self):
+        self.port.close();
+        if self.port.isOpen(): 
+            print("串口未关闭。")
+        else:
+            print("串口已关闭。")
+            
+    def setData(self, label):
+        if str(label) != '0':
+            head_string = '4E4A3C'
+            hex_label = format(label, '02X')
+            label_length = len(hex_label) // 2 
+            length_byte = format(label_length, '02X')
+            #length_byte = '01'
+            label_type = '01'
+            
+            send_string = head_string+length_byte+label_type+hex_label
+            #xor_result = label_length ^ int(label_type,16)
+            xor_result = int(length_byte,16) ^ int(label_type,16)
+            
+            for i in range(label_length):
+                byte_value = int(hex_label[i*2:i*2+2],16)
+                xor_result ^= byte_value
+                
+            xor_byte = format(xor_result, '02X')
+            
+            tail = '0D0A'
+            send_string += xor_byte + tail
+            
+            send_string_byte = [int(send_string[i:i+2],16) for i in range(0,len(send_string),2)]
+            #print(send_string)
+            
+            self.port.write(send_string_byte)    
+        
+    def start_acquisition(self):
         time.sleep(1e-2)
-        self.start()
+        
+    def stop_transmission(self):
+        self._exit.set()
 
-    def stop_trans(self):
-        self.stop()
-
-
-class HTOnlineSystem(BaseAmplifier):
+class DeviceManager:
+    """Create amplifier.
+    -author: Xixian Lin
+    -Created on: 2024-08-04
     """
-    An amplifier implementation for digital electroencephalograph device. It will analog amplify the collected
-    EEG signals, analog filter them and convert them into digital signals. Then it is transmitted to the host
-    computer EEG acquisition software through Ethernet for data display and storage.
-
-    author: Wei Zhao <vivian@tju.edu.cn>
-
-    Created on: 2023-12-4
-
-    update log:
-
-
-    Parameters
-    ----------
-    device_address : Tuple[ip : str, port : int]
-        ip : IP address of the collection host computer.
-        port : The port number.
-    srate : float
-        Sampling Rate, default is 1000.
-    packet_samples: float
-        The number of sampling points contained in each data packet, default is 100.
-    num_chans: int
-        Number of channels, default is 32.
-
-    Attributes
-    ----------
-    tcp_link : socket object
-        Socket object used for TCP connections.
-    packet_points : int
-        The number of sample points for all channels contained in the data packet.
-    pkg_size : int
-        The number of bytes occupied by the data packet.
-    timeout: float
-        Overtime time.
-
-    Raises
-    ----------
-    ValueError
-        Srate mismatch.
-        Samples for each package mismatch.
-        Num of chans mismatch.
-
-    """
-
-    _COMMANDS = {
-        "start_acq": bytes([165, 16, 1, 90]),
-        "stop_acq": bytes([165, 16, 2, 90]),
-        "get_srate": bytes([165, 1, 1, 90]),
-        "get_samples": bytes([165, 1, 2, 90]),
-        "get_num_chs": bytes([165, 1, 3, 90]),
-        "get_name_chs": bytes([165, 1, 4, 90])
+    amplifiers = {
+        "Niantong": Niantong,
+        "Nianji": Nianji,
+        "Neuracle":Neuracle
     }
 
-    def __init__(
-        self,
-        device_address: Tuple[str, int] = ("127.0.0.1", 4000),
-        srate: float = 1000,
-        packet_samples: float = 100,
-        num_chans: int = 32
-    ):
-        super().__init__()
-        self.device_address = device_address
-        self.srate = srate
-        self.packet_samples = packet_samples
-        self.tcp_link = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.num_chans = num_chans
-        self.packet_points = (num_chans + 1) * packet_samples
-        self.pkg_size = self.packet_points * 4
-        self.timeout = 2 * 25 / self.srate
-
-    def _unpack_header(self, b_header):
-        """
-        Unpack header.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-        b_header: bytes
-            Frame header to be unpacked.
-
-        Returns
-        ----------
-        upack_header :  cell(header : int, attribute_id : int, attribute_num : int, pkg_size : int)
-        header : int
-            Frame header.
-        attribute_id : int
-            The attribute id.
-        attribute_num : int
-            Number of attribute values.
-        pkg_size : int
-            Number of bytes in all attribute values
-
-        """
-
-        header = struct.unpack("<B", b_header[:1])
-        attribute_id = struct.unpack("<B", b_header[1:2])
-        attribute_num = struct.unpack("<H", b_header[2:4])
-        pkg_size = struct.unpack("<I", b_header[4:])
-        return (header[0], attribute_id[0], attribute_num[0], pkg_size[0])
-
-    def _unpack_data(self, b_data):
-        """
-        Unpack data.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-        b_data: bytes
-            Data to be unpacked.
-
-        Returns
-        ----------
-        samples :  list
-            Unpacked data.
-
-        """
-
-        fmt = "<" + str(self.packet_points) + "f"
-        samples = np.array(struct.unpack(fmt, b_data))  # 解开包
-        samples = samples.reshape(-1, self.num_chans + 1)
-        return samples.tolist()
-
-    def _recv(self, num_bytes):
-        """
-        Receive the specified bytes of data.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-        num_bytes: int
-            Number of bytes to accept.
-
-        Returns
-        ----------
-        b_data:  bytes
-            Received data of specified byte size.
-
-        """
-
-        fragments = []
-        b_count = 0
-        while b_count < num_bytes:
-            try:
-                chunk = self.tcp_link.recv(num_bytes - b_count)
-            except socket.timeout as e:
-                raise e
-            b_count += len(chunk)
-            fragments.append(chunk)
-
-        b_data = b"".join(fragments)
-        return b_data
-
-    def recv(self):
-        """
-        The minimal recv data function, usually a package.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-        samples:  bytes
-            An unpacked data packet.
-
-        """
-
-        samples = None
-        try:
-            b_header = self._recv(8)
-            header = self._unpack_header(b_header)
-            if header[-1] == self.pkg_size:
-                raw_data = self._recv(self.pkg_size)
-                self._recv(1)
-
-        except Exception:
-            self.tcp_link.close()
-            print("Can not receive data from socket")
+    def create_amplifier(device_type, **kwargs):
+        amplifier_class = DeviceManager.amplifiers.get(device_type)
+        if amplifier_class:
+            return amplifier_class(**kwargs)
         else:
-            samples = self._unpack_data(raw_data)
-        return samples
-
-    def send(self, message):
-        """
-        Send command.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-        samples: bytes
-            The command bytes needed to be sent.
-
-        Returns
-        ----------
-
-        """
-
-        self.tcp_link.sendall(message)
-
-    def get_srate(self):
-        """
-        Get the sampling rate of the device.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-        srate : int
-            The sampling rate of the device.
-
-        """
-
-        self.tcp_link.sendall(self._COMMANDS["get_srate"])
-        b_data = self._recv(13)
-        srate = int.from_bytes(b_data[8:10], "little")
-        return srate
-
-    def get_samples(self):
-        """
-        Get the number of sample points contained in each data packet of the device.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-        num_samples : int
-            The number of sample points contained in each data packet.
-
-        """
-
-        self.tcp_link.sendall(self._COMMANDS["get_samples"])
-        b_data = self._recv(13)
-        num_samples = int.from_bytes(b_data[8:10], "little")
-        return num_samples
-
-    def get_num_chs(self):
-        """
-        Get the number of channels of the device.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-        num_chs : int
-            The number of channels of the device.
-
-        """
-
-        self.tcp_link.sendall(self._COMMANDS["get_num_chs"])
-        b_data = self._recv(13)
-        num_chs = int.from_bytes(b_data[8:10], "little")
-        return num_chs
-
-    def get_name_chans(self):
-        """
-        Get the channels used by the devices.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-        chs_list : str
-            The channels used by the devices.
-
-        """
-
-        self.tcp_link.sendall(self._COMMANDS["get_name_chs"])
-        b_header = self._recv(8)
-        header = self._unpack_header(b_header)
-        samples = None
-        attr_nums = (self.num_chans + 1) * 8
-        if header[-1] == attr_nums:
-            b_data = self._recv(attr_nums)
-            samples = struct.unpack("<" + str(attr_nums) + "B", b_data)
-            self._recv(1)  # 帧尾
-        chs_list = []
-        ch = ""
-        for sample in samples:
-            if chr(sample) == "\t":
-                chs_list.append(ch)
-                ch = ""
-            elif chr(sample) != " ":
-                ch += chr(sample)
-        return chs_list
-
-    def set_timeout(self, timeout):
-        """
-        Set timeout.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-        timeout: float
-            Overtime time.
-
-        Returns
-        ----------
-
-        """
-
-        if self.tcp_link:
-            self.tcp_link.settimeout(timeout)
-
-    def connect_tcp(self):
-        """
-        Establish tcp connection.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-
-        """
-
-        self.tcp_link.connect(self.device_address)
-        if self.get_srate() != self.srate:
-            raise ValueError("Srate mismatch.")
-        if self.get_samples() != self.packet_samples:
-            raise ValueError("Samples for each package mismatch.")
-        if self.get_num_chs() != self.num_chans + 1:
-            raise ValueError("Num of chans mismatch.")
-
-    def close_connection(self):
-        """
-        Close tcp connection.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-
-        """
-        if self.tcp_link:
-            self.tcp_link.close()
-            self.tcp_link = None
-
-    def start_acq(self):
-        """
-        Start acquiring data.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-
-        """
-        self.send(self._COMMANDS["start_acq"])
-        time.sleep(1e-2)
-        self.start()
-
-    def stop_acq(self):
-        """
-        Stop acquiring data.
-
-        author: Wei Zhao <vivian@tju.edu.cn>
-
-        Created on: 2023-12-4
-
-        update log:
-
-        Parameters
-        ----------
-
-        Returns
-        ----------
-
-        """
-        self.send(self._COMMANDS["stop_acq"])
-        self.stop()
+            raise ValueError("Unsupported device type")
+
+class DataAcquisition:
+    """Multi-device acquisition platform.
+    -author: Xixian Lin
+    -Created on: 2024-08-04
+    """
+    def __init__(self):
+        self.devices = []
+        self._workers = {}
+        self.exit_ = threading.Event() 
+        self.data_test=[]
+        self.exit_.clear()
+        
+    def add_device(self, device_type, **kwargs):
+         amplifier = DeviceManager.create_amplifier(device_type, **kwargs)
+         self.devices.append(amplifier)
+         
+    def connect_device(self):
+        for device in self.devices:
+            device.connect()
+    def close_con(self):
+        for device in self.devices:
+            device.stop_transmission()
+            device.close_connection()
+   
+    def clear(self):
+        logger_amp.info("clear all workers")
+        worker_names = list(self._workers.keys())
+        for name in worker_names:
+            for device in self.devices:
+                device.markers[name].clear()
+            #self._markers[name].clear()
+            self.down_worker(name)
+            self.unregister_worker(name)
+        
+    def start_acquisition(self):
+        threads1 = []
+        for device in self.devices:
+            thread = threading.Thread(target=device.start_acquisition)
+            threads1.append(thread)
+            thread.start()
+        for thread in threads1:
+            thread.join()
+
+   def register(self, name, worker:ProcessWorker, interval, srate, events):
+    logger_amp.info("register worker-{}".format(name))
+    self._workers[name] = worker
+    
+    for device in self.devices:
+        try:
+           marker = Marker(interval, srate, events)
+           device.markers[name] = marker
+        except Exception:
+            print('register error')
+            
+    def unregister_worker(self, name: str):
+        logger_amp.info("unregister worker-{}".format(name))
+        del self._workers[name]    
+        for device in self.devices:
+            del device.markers[name]
+
+    def up_worker(self, name):
+       logger_amp.info("up worker-{}".format(name))
+       self._workers[name].start()
+    
+    def down_worker(self, name):
+        logger_amp.info("down worker-{}".format(name))
+        self._workers[name].stop()
+        self._workers[name].clear_queue()
+     
+    def start(self,name):
+        """start the loop."""
+        self.threads3 = []
+        for device in self.devices:
+        logger_amp.info("start the loop")
+            thread = threading.Thread(target=device._inner_loop,args=(name,))
+            self.threads3.append(thread)
+        for thread in self.threads3:
+            thread.start()
+        print('start ok')
+
+    def stop(self):
+        """stop the loop."""
+        logger_amp.info("stop the loop")
+        for device in self.devices:
+            device.stop_transmission
+            device.close_connection
+        
+        logger_amp.info("waiting the child thread exit")
+        for thread in self.threads3:
+            thread.join()
+        self.clear()
+        
+    def stop_put_in_worker_queue(self):
+        self.exit_.set()
+        
+    def put_in_worker_queue(self,name):
+        worker = self._workers[name]
+        time.sleep(5)
+        print('enter put in worker queue')
+        while not self.exit_.is_set(): 
+            try:      
+                all_samples = []
+                for device in self.devices:
+                    data = device.detected_data.get()
+                    if data: 
+                        all_samples.append(data)
+                    else:
+                        break  
+            except Exception as e:    
+                print("Exception in put in worker queue:", e)
+            try:
+                if all_samples:
+                    worker.put(all_samples)
+                    all_samples.clear()
+                else:
+                     print('Error: No data available from any device queue.')  
+            except Exception as e:    
+                print("Exception in put in worker queue2:", e) 
+                
+        print('exit put in worker queue')    
+    
