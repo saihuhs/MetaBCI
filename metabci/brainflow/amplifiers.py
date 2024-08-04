@@ -627,7 +627,7 @@ class DataAcquisition:
         
     def put_in_worker_queue(self,name):
         worker = self._workers[name]
-        time.sleep(5)
+        time.sleep(1)
         print('enter put in worker queue')
         while not self.exit_.is_set(): 
             try:      
