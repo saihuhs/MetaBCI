@@ -185,3 +185,28 @@ def _clean_dict(old_dict, includes=[]):
             old_dict[name] = None
             del old_dict[name]
     return old_dict
+
+class Niantong_port:
+    """
+    Send trigger to Niantong device. This class is writen under the Trigger box instruction.
+
+    author: Xixian Lin
+
+    Created on: 2024-08-04
+    """
+    def __init__(self, port_addr, baudrate=115200):
+        self.port = serial.Serial(port=port_addr, baudrate=baudrate)
+        
+    def setData(self,label):
+        if label < 1 or label > 255:
+            print("Error: Label must be in the range of 1 to 255.")
+            return
+  
+        label_hex = format(label, '02X')  
+        frame_end = '55660D'
+        data_to_send = label_hex + frame_end
+  
+        send_bytes = bytes.fromhex(data_to_send) 
+  
+        self.port.write(send_bytes)
+        
