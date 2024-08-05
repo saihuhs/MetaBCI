@@ -2396,12 +2396,14 @@ def paradigm(
     rest_time=0.5,
     response_time=2,
     image_time=2,
-    port_addr=9045,
+    #port_addr=9045,
+    port = None,
     nrep=1,
     pdim="ssvep",
-    lsl_source_id=None,
+    #lsl_source_id=None,
+    response_fuc = None,
     online=None,
-    device_type="NeuroScan",
+    #device_type="NeuroScan",
 ):
     """
     The classical paradigm is implemented, the task flow is defined, the ' q '
@@ -2421,42 +2423,9 @@ def paradigm(
 
         2023-12-09 by Lixia Lin <1582063370@qq.com> Add code annotation
 
-    Parameters
-    ----------
-        VSObject:
-            Examples of the three paradigms.
-        win:
-            window.
-        bg_color: ndarray
-            Background color.
-        fps: int
-            Display refresh rate.
-        display_time: float
-            Keyboard display time before 1st index.
-        index_time: float
-            Indicator display time.
-        rest_time: float, optional
-            SSVEP and P300 paradigm: the time interval between the target cue and the start of the stimulus.
-            MI paradigm: the time interval between the end of stimulus presentation and the target cue.
-        respond_time: float, optional
-            Feedback time during online experiment.
-        image_time: float, optional,
-            MI paradigm: Image time.
-        port_addr:
-             Computer port , hexadecimal or decimal.
-        nrep: int
-            Num of blocks.
-        pdim: str
-            One of the three paradigms can be 'ssvep ', ' p300 ', ' mi ' and ' con-ssvep '.
-        mi_flag: bool
-            Flag of MI paradigm.
-        lsl_source_id: str
-            The id of communication with the online processing program needs to be consistent between the two parties.
-        online: bool
-            Flag of online experiment.
-        device_type: str
-            See support device list in brainstim README file
-
+    modified log:
+    
+        2024-08-04
     """
 
     if not _check_array_like(bg_color, 3):
@@ -2464,14 +2433,6 @@ def paradigm(
     win.color = bg_color
     fps = VSObject.refresh_rate
 
-    if device_type == "NeuroScan":
-        port = NeuroScanPort(port_addr, use_serial=True) if port_addr else None
-    elif device_type == "Neuracle":
-        port = NeuraclePort(port_addr) if port_addr else None
-    else:
-        raise KeyError(
-            "Unknown device type: {}, please check your input".format(device_type)
-        )
     port_frame = int(0.05 * fps)
 
     inlet = False
@@ -2488,14 +2449,9 @@ def paradigm(
             VSObject.res_text_pos = copy(VSObject.reset_res_pos)
             VSObject.symbol_text = copy(VSObject.reset_res_text)
             res_text_pos = VSObject.reset_res_pos
-        if lsl_source_id:
+        #if lsl_source_id:
+        if response_fuc:
             inlet = True
-            streams = resolve_byprop(
-                "source_id", lsl_source_id, timeout=5
-            )  # Resolve all streams by source_id
-            if not streams:
-                return
-            inlet = StreamInlet(streams[0])  # receive stream data
 
     if pdim == "ssvep":
         # config experiment settings
@@ -2516,7 +2472,8 @@ def paradigm(
 
         # episode 2: begin to flash
         if port:
-            port.setData(0)
+            for port_instance in port:
+                port_instance.setData(0)
         for trial in trials:
             # quit demo
             keys = event.getKeys(["q"])
@@ -2555,11 +2512,14 @@ def paradigm(
             # phase III: target stimulating
             for sf in range(VSObject.stim_frames):
                 if sf == 0 and port and online:
-                    VSObject.win.callOnFlip(port.setData, id + 1)
+                    for port_instance in port:
+                        VSObject.win.callOnFlip(functools.partial(set_data, port_instance), id + 1 if id !=12 else id + 9)
                 elif sf == 0 and port:
-                    VSObject.win.callOnFlip(port.setData, id + 1)
+                    for port_instance in port:
+                        VSObject.win.callOnFlip(functools.partial(set_data, port_instance), id + 1 if id !=12 else id + 9)
                 if sf == port_frame and port:
-                    port.setData(0)
+                    for port_instance in port:
+                        port_instance.setData(0)
                 VSObject.flash_stimuli[sf].draw()
                 win.flip()
 
@@ -2570,26 +2530,27 @@ def paradigm(
                 for text_stimulus in VSObject.text_stimuli:
                     text_stimulus.draw()
                 win.flip()
-                samples, timestamp = inlet.pull_sample()
-                predict_id = int(samples[0]) - 1  # online predict id
-                VSObject.symbol_text = (
-                    VSObject.symbol_text + VSObject.symbols[predict_id]
-                )
-                res_text_pos = (
-                    res_text_pos[0] + VSObject.symbol_height / 3,
-                    res_text_pos[1],
-                )
-                iframe = 0
-                while iframe < int(fps * response_time):
-                    for text_stimulus in VSObject.text_stimuli:
-                        text_stimulus.draw()
-                    VSObject.rect_response.draw()
-                    VSObject.text_response.text = VSObject.symbol_text
-                    VSObject.text_response.pos = res_text_pos
-                    VSObject.text_response.draw()
-                    iframe += 1
-                    win.flip()
-
+                samples = response_fuc()
+                if samples is not None:
+                    predict_id = int(samples) - 1
+                    VSObject.symbol_text = (
+                        VSObject.symbol_text + VSObject.symbols[predict_id]
+                    )
+                    res_text_pos = (
+                        res_text_pos[0] + VSObject.symbol_height / 3,
+                        res_text_pos[1],
+                    )
+                    iframe = 0
+                    while iframe < int(fps * response_time):
+                        for text_stimulus in VSObject.text_stimuli:
+                            text_stimulus.draw()
+                        VSObject.rect_response.draw()
+                        VSObject.text_response.text = VSObject.symbol_text
+                        VSObject.text_response.pos = res_text_pos
+                        VSObject.text_response.draw()
+                        iframe += 1
+                        win.flip()
+    '''
     elif pdim == "avep":
         # config experiment settings
         conditions = [{"id": i} for i in range(VSObject.n_elements)]
@@ -3116,3 +3077,4 @@ def paradigm(
                     VSObject.text_response.draw()
                     iframe += 1
                     win.flip()
+    '''

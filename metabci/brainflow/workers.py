@@ -102,6 +102,8 @@ class ProcessWorker(multiprocessing.Process):
 
         update log:
             2022-08-10 by Wei Zhao
+        modified log:
+            2024-08-04
 
         Parameters
         ----------
@@ -115,7 +117,8 @@ class ProcessWorker(multiprocessing.Process):
                 self.worker_name if self.worker_name else os.getpid()
             )
         )
-        self._in_queue.put(data)
+        #self._in_queue.put(data)
+        self.consume(data)
 
     def run(self):
         """
