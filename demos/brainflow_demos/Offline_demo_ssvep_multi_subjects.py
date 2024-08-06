@@ -27,7 +27,7 @@ from sklearn.model_selection import train_test_split
 from functools import partial
 from metabci.brainda.algorithms.decomposition.cca import SCCA_LDA,SCCA_LDA_Multi_Subjects
 
-from fif_dataset import Test1#这里为导入的dataset
+from metabci.brainda.datasets.fif_dataset import Test1
 
 #数据集与参数定义
 dataset = Test1()
