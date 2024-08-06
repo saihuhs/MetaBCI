@@ -16,6 +16,7 @@ from copy import copy
 import random
 from scipy import signal
 from PIL import Image
+import functools
 
 
 # prefunctions
@@ -2383,7 +2384,8 @@ class GetPlabel_MyTherad:
         self._exit.set()
         self._t_loop.join()
 
-
+def set_data(port_instance, label):
+    port_instance.setData(label)
 # basic experiment control
 
 
