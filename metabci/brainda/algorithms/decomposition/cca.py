@@ -19,6 +19,12 @@ from sklearn.svm import SVC
 from joblib import Parallel, delayed
 
 from .base import FilterBankSSVEP
+
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from metabci.brainda.algorithms.utils.model_selection import set_random_seeds
+from metabci.brainda.algorithms.utils.model_selection import (
+    EnhancedLeaveOneGroupOut)
+
 class SCCA_LDA(BaseEstimator, TransformerMixin, ClassifierMixin):
     def __init__(self, n_components: int = 1, n_jobs: Optional[int] = None):
         self.n_components = n_components
