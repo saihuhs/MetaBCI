@@ -25,7 +25,7 @@ from metabci.brainda.algorithms.utils.model_selection import (
     EnhancedLeaveOneGroupOut)
 from sklearn.model_selection import train_test_split
 from functools import partial
-from SCCA_LDA_Multi_Subjects import SCCA_LDA,SCCA_LDA_Multi_Subjects
+from metabci.brainda.algorithms.decomposition.cca import SCCA_LDA,SCCA_LDA_Multi_Subjects
 
 from fif_dataset import Test1#这里为导入的dataset
 
