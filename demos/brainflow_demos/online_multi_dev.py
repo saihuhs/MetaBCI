@@ -89,7 +89,7 @@ class SCCA(BaseEstimator, TransformerMixin, ClassifierMixin):
         except Exception as e:
              print(f"An error occurred during prediction: {e}")
 
-  def label_encoder(y, labels):
+def label_encoder(y, labels):
     new_y = y.copy()
     for i, label in enumerate(labels):
         ix = (y == label)
