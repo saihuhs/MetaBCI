@@ -13,6 +13,7 @@ from collections import deque
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
+import Queue
 
 import serial
 import ctypes
@@ -296,7 +297,7 @@ class Neuracle(BaseAmplifier):
         self.tcp_link.connect(self.device_address)
 
     def start_acquisition(self):
-    time.sleep(1e-2)
+        time.sleep(1e-2)
 
     def stop_transmission(self):
         self._exit.set()
@@ -573,16 +574,16 @@ class DataAcquisition:
         for thread in threads1:
             thread.join()
 
-   def register(self, name, worker:ProcessWorker, interval, srate, events):
-    logger_amp.info("register worker-{}".format(name))
-    self._workers[name] = worker
-    
-    for device in self.devices:
-        try:
-           marker = Marker(interval, srate, events)
-           device.markers[name] = marker
-        except Exception:
-            print('register error')
+    def register(self, name, worker:ProcessWorker, interval, srate, events):
+        logger_amp.info("register worker-{}".format(name))
+        self._workers[name] = worker
+        
+        for device in self.devices:
+            try:
+               marker = Marker(interval, srate, events)
+               device.markers[name] = marker
+            except Exception:
+                print('register error')
             
     def unregister_worker(self, name: str):
         logger_amp.info("unregister worker-{}".format(name))
@@ -602,8 +603,8 @@ class DataAcquisition:
     def start(self,name):
         """start the loop."""
         self.threads3 = []
-        for device in self.devices:
         logger_amp.info("start the loop")
+        for device in self.devices:
             thread = threading.Thread(target=device._inner_loop,args=(name,))
             self.threads3.append(thread)
         for thread in self.threads3:
