@@ -421,7 +421,7 @@ class Niantong(BaseAmplifier):
                     signed=True,
                     byteorder="big",
                 )
-                * self._ratio
+                * self._ratio / 1e6
                 for i in self.ch_idx
             ]
             data.append(frame[self._trigger])
