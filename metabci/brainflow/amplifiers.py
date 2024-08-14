@@ -13,11 +13,11 @@ from collections import deque
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
+import serial
+import ctypes
 from queue import Queue
 import queue
 
-import serial
-import ctypes
 import re
 my_dll = ctypes.CDLL("path_to_LinkMe.dll")
 my_dll.dataProtocol.argtypes = (ctypes.POINTER(ctypes.c_ubyte),ctypes.c_int)
@@ -185,10 +185,9 @@ class BaseAmplifier:
     """
 
     def __init__(self):
-        self._markers = {}
         self._exit = threading.Event()
-        self.detected_data = Queue()
         self.markers = {}
+        self.detected_data = Queue()
 
     @abstractmethod
     def connect(self):
@@ -223,7 +222,7 @@ class BaseAmplifier:
 
     def _detect_event(self, samples, name):
         """detect event label"""
-        marker = self._markers[name]
+        marker = self.markers[name]
         for sample in samples:
             marker.append(sample)
             if marker(sample[-1]):
@@ -543,7 +542,6 @@ class DataAcquisition:
         self._workers = {}
         self.exit_ = threading.Event() 
         self.data_test=[]
-        self.exit_.clear()
         
     def add_device(self, device_type, **kwargs):
          amplifier = DeviceManager.create_amplifier(device_type, **kwargs)
@@ -552,6 +550,7 @@ class DataAcquisition:
     def connect_device(self):
         for device in self.devices:
             device.connect()
+            
     def close_con(self):
         for device in self.devices:
             device.stop_transmission()
@@ -617,8 +616,8 @@ class DataAcquisition:
         """stop the loop."""
         logger_amp.info("stop the loop")
         for device in self.devices:
-            device.stop_transmission
-            device.close_connection
+            device.stop_transmission()
+            device.close_connection()
         
         logger_amp.info("waiting the child thread exit")
         for thread in self.threads3:
@@ -627,20 +626,23 @@ class DataAcquisition:
         
     def stop_put_in_worker_queue(self):
         self.exit_.set()
+        print('stop put_in_worker_queue')
         
     def put_in_worker_queue(self,name):
         worker = self._workers[name]
-        time.sleep(1)
+        time.sleep(5)
         print('enter put in worker queue')
         while not self.exit_.is_set(): 
             try:      
+                
                 all_samples = []
                 for device in self.devices:
                     try:
-                        data = device.detected_data.get(timeout=10)
+                        data = device.detected_data.get(timeout=60)
                     except queue.Empty:
                         print(f"No data available from device '{str(device)}' after 10 seconds. Skipping this device.")
                         continue
+                    
                     if data: 
                         print('length data:',len(data))
                         all_samples.append(data)
@@ -651,6 +653,7 @@ class DataAcquisition:
             try:
                 if all_samples:
                     worker.consume(all_samples)
+                    #worker.put(all_samples)
                     print('sample length is',len(all_samples))
                     all_samples.clear()
                 else:
@@ -658,5 +661,5 @@ class DataAcquisition:
             except Exception as e:    
                 print("Exception in put in worker queue2:", e) 
                 
-        print('exit put in worker queue')    
+        print('exit put in worker queue')
     
