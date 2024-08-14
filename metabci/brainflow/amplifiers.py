@@ -641,6 +641,7 @@ class DataAcquisition:
                         print(f"No data available from device '{str(device)}' after 10 seconds. Skipping this device.")
                         continue
                     if data: 
+                        print('length data:',len(data))
                         all_samples.append(data)
                     else:
                         break  
@@ -649,6 +650,7 @@ class DataAcquisition:
             try:
                 if all_samples:
                     worker.consume(all_samples)
+                    print('sample length is',len(all_samples))
                     all_samples.clear()
                 else:
                      print('Error: No data available from any device queue.')  
