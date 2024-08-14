@@ -188,6 +188,7 @@ class BaseAmplifier:
         self._markers = {}
         self._exit = threading.Event()
         self.detected_data = Queue()
+        self.markers = {}
 
     @abstractmethod
     def connect(self):
@@ -563,7 +564,7 @@ class DataAcquisition:
             for device in self.devices:
                 device.markers[name].clear()
             #self._markers[name].clear()
-            self.down_worker(name)
+            #self.down_worker(name)
             self.unregister_worker(name)
         
     def start_acquisition(self):
