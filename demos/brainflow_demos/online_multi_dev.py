@@ -73,7 +73,7 @@ class SCCA(BaseEstimator, TransformerMixin, ClassifierMixin):
                      rhos_.append(rhos)
      
                  if len(rhos_) < 2:
-                     raise ValueError("At least two rhos arrays are required to perform maximum selection.")
+                     labels = self.lda_.predict(rhos)
      
                  # 选择最大相关系数
                  new_rhos = np.maximum.reduce(rhos_)
