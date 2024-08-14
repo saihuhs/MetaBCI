@@ -13,7 +13,8 @@ from collections import deque
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
-import Queue
+from queue import Queue
+import queue
 
 import serial
 import ctypes
@@ -634,7 +635,11 @@ class DataAcquisition:
             try:      
                 all_samples = []
                 for device in self.devices:
-                    data = device.detected_data.get()
+                    try:
+                        data = device.detected_data.get(timeout=10)
+                    except queue.Empty:
+                        print(f"No data available from device '{str(device)}' after 10 seconds. Skipping this device.")
+                        continue
                     if data: 
                         all_samples.append(data)
                     else:
@@ -643,7 +648,7 @@ class DataAcquisition:
                 print("Exception in put in worker queue:", e)
             try:
                 if all_samples:
-                    worker.put(all_samples)
+                    worker.consume(all_samples)
                     all_samples.clear()
                 else:
                      print('Error: No data available from any device queue.')  
