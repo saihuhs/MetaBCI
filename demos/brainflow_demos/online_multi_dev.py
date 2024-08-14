@@ -424,4 +424,4 @@ if __name__ == "__main__":
         
         thread.join(timeout=5)
         if thread.is_alive():
-            thread.terminate()
+            thread._stop()
