@@ -157,6 +157,12 @@ def model_predict(X, srate=500, model=None):
         print("X shape after reshape:", X.shape)
         try:
             X = resample(X, up=250, down=srate)
+            # Apply notch filter
+            X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
+                                fir_design='firwin', verbose=False)
+            # Apply bandpass filter
+            X = mne.filter.filter_data(X, sfreq=srate, l_freq=8, h_freq=55, l_trans_bandwidth=2, h_trans_bandwidth=5,
+                               method='fir', phase='zero-double', verbose=False)
             X = X - np.mean(X, axis=-1, keepdims=True)
             X = X / np.std(X, axis=(-1, -2), keepdims=True)
             print('X after resample:',X.shape)
