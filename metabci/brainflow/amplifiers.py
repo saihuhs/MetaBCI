@@ -27,8 +27,8 @@ my_dll.getFallFlag.argtypes = (ctypes.POINTER(ctypes.c_int), )
 my_dll.getData.restype =ctypes.POINTER(ctypes.POINTER(ctypes.c_double))
 my_dll.getDataCurrIndex.argtypes = (ctypes.POINTER(ctypes.c_long), )
 
-from .logger import get_logger
-from .workers import ProcessWorker
+from metabci.brainflow.logger import get_logger
+from metabci.brainflow.workers import ProcessWorker
 
 logger_amp = get_logger("amplifier")
 logger_marker = get_logger("marker")
