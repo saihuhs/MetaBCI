@@ -257,8 +257,8 @@ class FeedbackWorker(ProcessWorker):
               print('label is',label)
               return label
           
-      def post(self):
-          pass
+    def post(self):
+        pass
 
 
 if __name__ == "__main__":
@@ -284,7 +284,7 @@ if __name__ == "__main__":
         stim_labels=stim_labels, srate=srate,
         timeout=0.05,
         worker_name=feedback_worker_name)
-    #测试中无法正确从worker队列中获取数据，因此将worker方法单独使用
+    
     worker.pre()
 
     test = DataAcquisition()
@@ -407,28 +407,15 @@ if __name__ == "__main__":
         print('are you OK? Step 6')
         ex.run()
         
-        input('press any key to close\n')
-        test.stop_put_in_worker_queue()
-        time.sleep(1)
-        thread.join()
-        time.sleep(1)
-        worker.clear_queue()
-        time.sleep(1)
-        test.stop()
-        test.clear()
-        for p in port_:
-            p.port.close()
     except Exception as e:
         print(e)
     finally:
-        worker.clear_queue()
-        time.sleep(1)
         test.stop()
-        time.sleep(1)
-        test.clear()
-        for p in port_:
-            p.port.close()
-        thread.join()
-        time.sleep(1)
         test.stop_put_in_worker_queue()
-    #等待线程结束所用时间不稳定，建议手动结束程序
+        time.sleep(1)
+        
+        #nt_port.port.close()
+        
+        thread.join(timeout=5)
+        if thread.is_alive():
+            thread.terminate()
