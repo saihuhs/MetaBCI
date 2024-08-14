@@ -124,14 +124,17 @@ def train_model(X, y, srate=500):
     if not isinstance(X, np.ndarray):
         raise ValueError("X should be a NumPy array.")
     y = np.reshape(y, (-1))
-    X = resample(X, up=250, down=srate)
+    X = resample(X, up=250, down=srate)                        
 
     X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
+
                                 fir_design='firwin', verbose=False)
 
     X = mne.filter.filter_data(X, sfreq=srate, l_freq=8, h_freq=55, l_trans_bandwidth=2, h_trans_bandwidth=5,
                                method='fir', phase='zero-double', verbose=False)
-
+    X = X - np.mean(X, axis=-1, keepdims=True)
+    X = X / np.std(X, axis=(-1, -2), keepdims=True)
+    
     freqs = np.arange(8, 16, 0.4)
     Yf = generate_cca_references(freqs, srate=250, T=1, n_harmonics=2)
     model = SCCA(n_components=1, n_jobs=1)
@@ -182,7 +185,15 @@ def model_predict(X, srate=500, model=None):
     else:
         print("X shape before reshape:", X.shape)
         X = np.reshape(X, (-1, X.shape[-2], X.shape[-1]))
+        
         X = resample(X, up=250, down=srate)
+        # Apply notch filter
+        X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
+                            fir_design='firwin', verbose=False)
+        # Apply bandpass filter
+        X = mne.filter.filter_data(X, sfreq=srate, l_freq=8, h_freq=55, l_trans_bandwidth=2, h_trans_bandwidth=5,
+                           method='fir', phase='zero-double', verbose=False)
+
         X = X - np.mean(X, axis=-1, keepdims=True)
         X = X / np.std(X, axis=(-1, -2), keepdims=True)
         print("X shape after reshape:", X.shape)
@@ -198,6 +209,7 @@ def offline_validation(X, y, srate=500):
     for train_ind, test_ind in spliter.split(X, y=y):
         X_train, y_train = np.copy(X[train_ind]), np.copy(y[train_ind])
         X_test, y_test = np.copy(X[test_ind]), np.copy(y[test_ind])
+        
         model = train_model(X_train, y_train, srate=srate)
         p_labels = model_predict(X_test, srate=srate, model=model)
         kfold_accs.append(np.mean(p_labels == y_test))
