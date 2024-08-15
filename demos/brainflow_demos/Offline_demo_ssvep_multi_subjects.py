@@ -61,8 +61,10 @@ def raw_hook(raw, caches):
     raw.filter(8, 55, l_trans_bandwidth=2, h_trans_bandwidth=5,
                phase='zero-double')#经过两次零相位滤波，第一次正向，第二次反向，这样可以消除相位失真。
     caches['raw_stage'] = caches.get('raw_stage', -1) + 1#跟踪处理流程的进度或阶段。
+
+
     # 降采样
-    raw.resample(250)  # 直接在raw对象上调用resample
+    #raw.resample(250)  # 直接在raw对象上调用resample
     return raw, caches
 
 paradigm.register_raw_hook(raw_hook)
