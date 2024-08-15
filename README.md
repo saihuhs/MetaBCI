@@ -1,51 +1,27 @@
-# MetaBCI
+# MetaBCI————多品牌多设备脑电采集与多人解码扩展平台       
 
-## Welcome! 
-MetaBCI is an open-source platform for non-invasive brain computer interface. The project of MetaBCI is led by Prof. Minpeng Xu from Tianjin University, China. MetaBCI has 3 main parts:
-* brainda: for importing dataset, pre-processing EEG data and implementing EEG decoding algorithms.
-* brainflow: a high speed EEG online data processing framework.
-* brainstim: a simple and efficient BCI experiment paradigms design module. 
+### 问题 
 
-This version is primarily built upon the existing MetaBCI functions, expanding the integration of multi-brand BCI device drivers to achieve synchronous collection of heterogeneous devices and multiple individuals trigger management. Through the collaborative "hyperscanning" paradigm, it integrates multi-user EEG information to study the collaborative effect on decoding accuracy and speed of BCI, providing a novel approach for practical application. Additionally, the project establishes a platform for acquiring and decoding multi-human brain electrical data while offering interfaces for various products from different brands, thereby enhancing convenience in device usage.
+* 当前的脑机接口（BCI）系统解码主要依赖于单个用户的脑电图（EEG）信号，导致了效率瓶颈。 
+* 不同品牌的脑电图设备采用不同的数据采集和利用方法，这给使用带来了不便。 
 
-## Content
+### 解决方案 
 
-- [MetaBCI](#metabci)
-  - [Welcome!](#welcome)
-  - [What are we doing?](#what-are-we-doing)
-    - [The problem](#the-problem)
-    - [The solution](#the-solution)
-  - [Who are we?](#who-are-we)
-  - [License](#license)
-  - [Contact](#contact)
-  - [Acknowledgements](#acknowledgements)
+* 建立一个采集平台，支持从多个品牌设备和多位用户同时采集脑电图（EEG）信号。 
+* 基于 Brainda 子平台，提供支持多位用户稳态视觉诱发电位（SSVEP）协作解码的三种算法 
+* 确保基于 Brainflow 子平台，实现多设备脑电图信号的同时采集和触发同步。
 
-## What are we doing?
+## 我们是谁 
 
-### The problem
+我们是来自深圳大学 MindLab实验室 的本科生团队。 
 
-* The current BCI system predominantly relies on the EEG signal of an individual user, leading to an efficiency bottleneck
-* Different brands of EEG devices employ varying data collection and utilization methods, which causes inconvenience to use
+## 许可证 
 
-### The solution
+本项目遵循 GNU 通用公共许可证第 2.0 版。更多信息请参见 'LICENSE '文件。  
 
-This version will:
+## 联系方式 
 
-* Establishment of a platform to support the simultaneous acquisition of EEG from multiple brands of devices and multiple individuals
-* Provides multiple individuals SSVEP collaborative decoding examples
-* Ensure simultaneous acquisition of EEG from multiple devices and synchronization of trigger across multiple devices based on Brainflow
+Email: TBC_TJU_2022@163.com 
 
-## Who are we?
-
-We are undergraduates from mindlab, szu.
-
-## License
-
-Distributed under the GNU General Public License v2.0 License. See `LICENSE` for more information.
-
-## Contact
-
-Email: TBC_TJU_2022@163.com
-
-## Acknowledgements
-感谢黄淦老师、天津大学梅老师、念通智能工程师等的鼎力相助。
+## 致谢 
+感谢黄淦老师、天津大学梅老师、以及念通智能，博睿康，念及科技三家公司的工程师对本项目的鼎力相助。 
