@@ -123,8 +123,8 @@ def read_data(run_files, chs, interval, labels):
 def train_model(X, y, srate=500):
     if not isinstance(X, np.ndarray):
         raise ValueError("X should be a NumPy array.")
-    y = np.reshape(y, (-1))
-    X = resample(X, up=250, down=srate)
+    y = np.reshape(y, (-1))  
+    #X = resample(X, up=250, down=srate)
 
     X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
                                 fir_design='firwin', verbose=False)
@@ -133,7 +133,7 @@ def train_model(X, y, srate=500):
                                method='fir', phase='zero-double', verbose=False)
 
     freqs = np.arange(8, 16, 0.4)
-    Yf = generate_cca_references(freqs, srate=250, T=1, n_harmonics=2)
+    Yf = generate_cca_references(freqs, srate=500, T=1, n_harmonics=2)
     model = SCCA(n_components=1, n_jobs=1)
     model = model.fit(X, y, Yf)
 
@@ -155,8 +155,8 @@ def model_predict(X, srate=500, model=None):
             reshaped_data.append(X_reshaped)
         X = np.concatenate(reshaped_data)
         print("X shape after reshape:", X.shape)
-        try:
-            X = resample(X, up=250, down=srate)
+        try:  
+            #X = resample(X, up=250, down=srate)
             # Apply notch filter
             X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
                                 fir_design='firwin', verbose=False)
@@ -182,7 +182,7 @@ def model_predict(X, srate=500, model=None):
     else:
         print("X shape before reshape:", X.shape)
         X = np.reshape(X, (-1, X.shape[-2], X.shape[-1]))
-        X = resample(X, up=250, down=srate)
+       # X = resample(X, up=250, down=srate)  
         X = X - np.mean(X, axis=-1, keepdims=True)
         X = X / np.std(X, axis=(-1, -2), keepdims=True)
         print("X shape after reshape:", X.shape)
