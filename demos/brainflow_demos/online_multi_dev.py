@@ -155,8 +155,8 @@ def model_predict(X, srate=500, model=None):
             reshaped_data.append(X_reshaped)
         X = np.concatenate(reshaped_data)
         print("X shape after reshape:", X.shape)
-        try:  
-            #X = resample(X, up=250, down=srate)
+        try:
+            # X = resample(X, up=250, down=srate)
             # Apply notch filter
             X = mne.filter.notch_filter(X, Fs=srate, freqs=50, picks=np.arange(X.shape[1]), method='fir', fir_window='hamming',
                                 fir_design='firwin', verbose=False)
